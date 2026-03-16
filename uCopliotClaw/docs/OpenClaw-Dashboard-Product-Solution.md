@@ -3373,10 +3373,12 @@ interface OpenClawSkillMetadata {
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │  智能体监控 (Agent Monitoring)                                    │  │
-│  │  ├─ health         : 系统健康快照 (心跳/会话/通道/探测)            │  │
-│  │  ├─ status         : 运行状态摘要 (会话详情/心跳/队列事件)         │  │
-│  │  ├─ agents.list    : 多智能体列表与配置                            │  │
-│  │  └─ agents.files.* : 智能体工作区文件管理                          │  │
+│  │  ├─ health              : 系统健康快照 (心跳/会话/通道/探测)       │  │
+│  │  ├─ status              : 运行状态摘要 (会话详情/心跳/队列事件)    │  │
+│  │  ├─ agents.list         : 多智能体列表与配置                      │  │
+│  │  ├─ agents.files.*      : 智能体工作区文件管理                     │  │
+│  │  ├─ doctor.memory.status: 智能体记忆状态 (向量化/索引/搜索)        │  │
+│  │  └─ subagents.*         : 多智能体协作监控 (子智能体/路由绑定)     │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
@@ -3579,6 +3581,197 @@ interface GatewayAgentRow {
 - 多智能体管理页面
 - 智能体选择器
 - 智能体身份展示
+
+#### D.2.4 doctor.memory.status - 智能体记忆状态
+
+**接口路径**: `src/gateway/server-methods/doctor.ts` → `doctor.memory.status` 方法
+
+**数据模型**:
+
+```typescript
+// 来源: src/gateway/server-methods/doctor.ts
+interface DoctorMemoryStatusPayload {
+  agentId: string;              // 智能体ID
+  provider?: string;            // 向量化提供商 (openai/local/gemini/voyage/mistral/ollama)
+  embedding: {
+    ok: boolean;                // 向量化服务是否可用
+    error?: string;             // 错误信息
+  };
+}
+
+// 来源: src/memory/types.ts
+interface MemoryProviderStatus {
+  backend: "builtin" | "qmd";   // 后端类型 (内置或 QMD)
+  provider: string;             // 向量化提供商
+  model?: string;               // 使用的模型
+  files?: number;               // 记忆文件数量
+  chunks?: number;              // 向量化块数量
+  dirty?: boolean;              // 索引是否需要同步
+  workspaceDir?: string;        // 工作区目录
+  dbPath?: string;              // 数据库路径
+  extraPaths?: string[];        // 额外记忆路径
+  sources?: MemorySource[];     // 数据源类型
+  sourceCounts?: Array<{        // 各来源统计
+    source: MemorySource;       // 来源类型 ("memory" | "sessions")
+    files: number;              // 文件数
+    chunks: number;             // 块数
+  }>;
+  cache?: {                     // 向量缓存
+    enabled: boolean;
+    entries?: number;           // 缓存条目数
+    maxEntries?: number;        // 最大条目数
+  };
+  fts?: {                       // 全文搜索
+    enabled: boolean;
+    available: boolean;
+    error?: string;
+  };
+  vector?: {                    // 向量搜索
+    enabled: boolean;
+    available?: boolean;
+    extensionPath?: string;
+    loadError?: string;
+    dims?: number;              // 向量维度
+  };
+  batch?: {                     // 批量向量化
+    enabled: boolean;
+    failures: number;           // 失败次数
+    limit: number;              // 批次限制
+    wait: boolean;
+    concurrency: number;        // 并发数
+    pollIntervalMs: number;
+    timeoutMs: number;
+    lastError?: string;
+    lastProvider?: string;
+  };
+  fallback?: {                  // 回退信息
+    from: string;
+    reason?: string;
+  };
+}
+
+type MemorySource = "memory" | "sessions";  // 记忆来源 (MEMORY.md 或会话历史)
+```
+
+**采集方式**:
+- WebSocket RPC: `{ "method": "doctor.memory.status" }`
+- 需要 `read` scope
+
+**Dashboard 应用**:
+- 记忆索引健康状态监控
+- 向量化服务可用性检测
+- 记忆文件/块数量统计
+- 全文搜索 (FTS) 状态
+- 向量搜索状态
+- 索引同步状态 (dirty 标志)
+- 记忆来源分布分析
+
+#### D.2.5 多智能体协作监控
+
+**接口路径**: 内部函数 (尚未暴露为 Gateway RPC)
+
+**数据模型**:
+
+```typescript
+// 来源: src/agents/subagent-registry.types.ts
+interface SubagentRunRecord {
+  runId: string;                // 运行ID
+  childSessionKey: string;      // 子智能体会话键
+  controllerSessionKey?: string;  // 控制者会话键
+  requesterSessionKey: string;  // 请求者会话键
+  requesterOrigin?: DeliveryContext;  // 请求来源
+  requesterDisplayKey: string;  // 请求者显示键
+  task: string;                 // 任务描述
+  cleanup: "delete" | "keep";   // 清理策略
+  label?: string;               // 标签
+  model?: string;               // 使用的模型
+  workspaceDir?: string;        // 工作区目录
+  runTimeoutSeconds?: number;   // 超时时间
+  spawnMode?: SpawnSubagentMode;  // 生成模式
+  createdAt: number;            // 创建时间
+  startedAt?: number;           // 开始时间
+  endedAt?: number;             // 结束时间
+  outcome?: SubagentRunOutcome; // 运行结果
+  endedReason?: SubagentLifecycleEndedReason;  // 结束原因
+  expectsCompletionMessage?: boolean;  // 是否期望完成消息
+  frozenResultText?: string | null;  // 冻结的结果文本
+}
+
+// 来源: src/agents/subagent-announce.ts
+interface SubagentRunOutcome {
+  status: "ok" | "error";
+  error?: string;
+  result?: unknown;
+}
+
+// 来源: src/agents/subagent-lifecycle-events.ts
+type SubagentLifecycleEndedReason =
+  | "complete"   // 正常完成
+  | "error"      // 错误终止
+  | "killed";    // 被终止
+
+// 来源: src/agents/subagent-spawn.ts
+type SpawnSubagentMode =
+  | "session"    // 会话模式
+  | "inline";    // 内联模式
+```
+
+**查询函数** (来源: `src/agents/subagent-registry-queries.ts`):
+
+```typescript
+// 统计活跃子智能体数量
+function countActiveRunsForSession(controllerSessionKey: string): number;
+
+// 统计活跃后代数量
+function countActiveDescendantRuns(rootSessionKey: string): number;
+
+// 统计待处理后代数量
+function countPendingDescendantRuns(rootSessionKey: string): number;
+
+// 列出控制者的所有子智能体
+function listSubagentRunsForController(controllerSessionKey: string): SubagentRunRecord[];
+
+// 列出请求者的所有后代
+function listDescendantRunsForRequester(rootSessionKey: string): SubagentRunRecord[];
+```
+
+**路由绑定** (来源: `src/routing/bindings.ts`):
+
+```typescript
+// 来源: src/config/types.agents.ts
+interface AgentRouteBinding {
+  agentId: string;              // 智能体ID
+  match: {
+    channel?: string;           // 通道
+    accountId?: string;         // 账户ID
+    peer?: string;              // 对等体
+    guildId?: string;           // 服务器ID (Discord)
+    teamId?: string;            // 团队ID (Slack)
+    roles?: string[];           // 角色列表
+  };
+}
+
+// 列出所有路由绑定
+function listBindings(cfg: OpenClawConfig): AgentRouteBinding[];
+
+// 构建通道-账户-智能体绑定映射
+function buildChannelAccountBindings(cfg: OpenClawConfig): Map<
+  string,  // channelId
+  Map<string, string[]>  // agentId -> accountId[]
+>;
+```
+
+**采集方式**:
+- 当前为内部函数，Dashboard 需通过新增 RPC 方法获取
+- 建议新增: `subagents.status`, `subagents.list`, `bindings.list`
+
+**Dashboard 应用**:
+- 活跃子智能体数量监控
+- 子智能体任务层级可视化
+- 路由绑定配置查看
+- 智能体调度统计
+- 多智能体协作拓扑图
+- 任务执行状态追踪
 
 ### D.3 会话监控接口
 
@@ -4122,6 +4315,8 @@ interface ProviderUsageSummary {
 | 页面 | 数据源 | 刷新频率 | 主要功能 |
 |------|--------|----------|----------|
 | 系统健康 | health, status | 30s | 健康总览、心跳状态、队列监控 |
+| 智能体记忆 | doctor.memory.status | 60s | 记忆索引、向量化状态、FTS/向量搜索 |
+| 多智能体协作 | subagents.*, bindings.list | 实时 | 子智能体状态、任务层级、路由绑定 |
 | 会话监控 | sessions.list, sessions.usage | 60s | 会话列表、Token 用量、成本分析 |
 | 通道状态 | channels.status | 手动/30s | 通道配置、连接探测、活动时间 |
 | 设备管理 | node.list, node.describe | 实时 | 设备列表、配对管理、能力查看 |
@@ -4168,6 +4363,13 @@ function pollLogs() {
   }));
 }
 setInterval(pollLogs, 5000);
+
+// 获取智能体记忆状态
+ws.send(JSON.stringify({
+  id: '5',
+  method: 'doctor.memory.status',
+  params: {}
+}));
 ```
 
 #### D.7.2 CLI 调用
@@ -4178,6 +4380,9 @@ openclaw health --json
 
 # 状态摘要
 openclaw status --json
+
+# 记忆状态检查
+openclaw memory status --json
 
 # 通道状态
 openclaw channels status --probe --json
@@ -4197,6 +4402,7 @@ openclaw node list --json
 |------|----------|----------|------|
 | health | 30s | Gateway 内存 | 快照数据，变化不频繁 |
 | status | 60s | Dashboard 后端 | 运行状态，定期刷新 |
+| doctor.memory.status | 60s | Dashboard 后端 | 记忆索引状态，定期检查 |
 | sessions.usage | 30s | Gateway 内存 | 用量计算开销大 |
 | channels.status | 无 | - | 探测结果需实时 |
 | logs.tail | 无 | - | 流式数据，增量读取 |
@@ -4245,5 +4451,5 @@ async function syncSessions() {
 
 ---
 
-*文档版本: 1.2.0*
-*最后更新: 2026-03-15*
+*文档版本: 1.3.0*
+*最后更新: 2026-03-16*
